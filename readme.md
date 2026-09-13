@@ -121,6 +121,46 @@ Quite self-explainatory
 ##### InvalidValueGr
 ##### TooBigGr
 ### Some unit tests
+## sheet.rs
+### Sheet
+#### Vars
+##### name
+String
+Name of sheet
+##### records
+Vec<Record>
+Sheet's contents
+##### fraction
+i64
+Fraction for calculations \(made into i64 to not loose calulative quality\)
+##### id
+i64
+Database id, NOT INDEX
+#### Methods
+##### new
+##### id
+##### id_set
+##### sum
+##### sum_display
+##### balance
+##### balance_display
+##### push
+##### is_empty
+##### len
+##### remove
+##### edit
+\(&mut self, index: usize, record: Record\)
+-> Result<(), SheetError>
+Edits record of given index to have given contents
+### SheetError
+#### IndexOutOfBounds
+Quite self-explainatory
+## sheetcollection.rs
+### SheetCollection
+#### Vars
+
+#### Methods
+
 ## database.rs
 ### Database
 #### Vars
