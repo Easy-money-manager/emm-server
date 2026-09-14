@@ -17,7 +17,14 @@ See the `LICENSE` file for details.
 Alternative commercial licensing may be available separately.
 
 
-
+# Visual identity
+Background     #0a0c0b
+Surface        dark translucent graphite
+Primary accent emerald
+Secondary      gold
+Text           warm off-white
+Corner radius  ~12–16 px
+Motion         short, subtle
 
 
 
