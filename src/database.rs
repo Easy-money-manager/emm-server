@@ -1,8 +1,8 @@
 use rusqlite::Connection;
 use chrono::NaiveDate;
-use crate::record::Record;
-use crate::sheetcollection::SheetCollection;
-use crate::sheet::Sheet;
+use emm_shared::record::Record;
+use emm_shared::sheet::Sheet;
+use emm_shared::sheetcollection::SheetCollection;
 
 pub struct Database {
     connection: Connection,
