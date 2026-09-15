@@ -2,7 +2,8 @@ use axum::{ Router, routing::{ get, put }, Json, extract::{ Path, State }, http:
 use serde::Serialize;
 use std::sync::{ Arc, Mutex};
 use crate::database::Database;
-use emm_shared::request::{ GetRecordsResponse, CreateRecordRequest, CreateRecordResponse, UpdateRecordRequest, BootstrapResponse };
+use emm_shared::request::{ CreateRecordRequest, UpdateRecordRequest };
+use emm_shared::response::{ GetRecordsResponse, CreateRecordResponse,  BootstrapResponse };
 use tower_http::cors::{ Any, CorsLayer };
 
 #[derive(Serialize)]
