@@ -4,6 +4,16 @@ use emm_shared::record::Record;
 use emm_shared::sheet::Sheet;
 use emm_shared::sheetcollection::SheetCollection;
 
+pub enum CreateUserError {
+    UsernameTaken,
+    Database(rusqlite::Error),
+}
+impl From<rusqlite::Error> for CreateUserError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Database(error)
+    }
+}
+
 pub struct Database {
     connection: Connection,
 }
@@ -18,11 +28,23 @@ impl Database {
     pub fn initialize(&self) -> rusqlite::Result<()> {
         self.connection.execute_batch(
             "
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEAGER PRIMARY KEY,
+                username TEXT NOT NULL,
+                password_hash NOT NULL,
+
+                UNIQUE(id, username)
+            );
+
             CREATE TABLE IF NOT EXISTS collections (
                 id INTEGER PRIMARY KEY,
+                user_id INTEAGER NOT NULL,
                 name TEXT NOT NULL,
 
-                UNIQUE(id, name)
+                UNIQUE(id, name),
+
+                FOREIGN KEY (user_id)
+                    REFERENCES users(id)
             );
 
             CREATE TABLE IF NOT EXISTS sheets (
@@ -51,25 +73,49 @@ impl Database {
             );
             ",
             )?;
-            let main_id:i64 = self.get_or_create_collection("Main")?;
-            let _incomes_id = self.get_or_create_sheet(main_id, "Incomes", 100)?;
-            let _essentials_id = self.get_or_create_sheet(main_id, "Essentials", 50)?;
-            let _stability_id = self.get_or_create_sheet(main_id, "Stability", 15)?;
-            let _growth_id = self.get_or_create_sheet(main_id, "Growth", 25)?;
-            let _prizes_id = self.get_or_create_sheet(main_id, "Prizes", 10)?;
-            let planning_id: i64 = self.get_or_create_collection("Planning")?;
-            let _incomes_id = self.get_or_create_sheet(planning_id, "Incomes", 100)?;
-            let _expenses_id = self.get_or_create_sheet(planning_id, "Expenses", 100)?;
             Ok(())
     }
 
-    pub fn get_collections(&self) -> rusqlite::Result<Vec<SheetCollection>> {
+    pub fn create_defaults(&self, user_id: i64) -> rusqlite::Result<()> {
+        let main_id: i64 = self.get_or_create_collection(user_id, "Main")?;
+        let _incomes_id = self.get_or_create_sheet(main_id, "Incomes", 100)?;
+        let _essentials_id = self.get_or_create_sheet(main_id, "Essentials", 50)?;
+        let _stability_id = self.get_or_create_sheet(main_id, "Stability", 15)?;
+        let _growth_id = self.get_or_create_sheet(main_id, "Growth", 25)?;
+        let _prizes_id = self.get_or_create_sheet(main_id, "Prizes", 10)?;
+        let planning_id: i64 = self.get_or_create_collection(user_id, "Planning")?;
+        let _incomes_id = self.get_or_create_sheet(planning_id, "Incomes", 100)?;
+        let _expenses_id = self.get_or_create_sheet(planning_id, "Expenses", 100)?;
+        Ok(())
+    }
+//    pub fn get_user(&self, name: &str) -> rusqlite::Result<i64> {
+//        self.connection.query_row("SELECT id FROM users WHERE name = ?1", [name], |row| row.get(0))
+//    }
+    pub fn create_user(&self, username: &str, password_hash: &str) -> Result<i64, CreateUserError> {
+        match self.connection.execute("INSERT INTO users (username, password_hash) VALUES (?1, ?2)", (username, password_hash)) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(error, _)) if error.code == rusqlite::ErrorCode::ConstraintViolation => return Err(CreateUserError::UsernameTaken),
+            Err(error) => return Err(CreateUserError::Database(error)),
+        }
+
+        Ok(self.connection.last_insert_rowid())
+    }
+    pub fn create_user_with_defaults(&self, username: &str, password_hash: &str) -> Result<i64, CreateUserError> {
+        let id = self.create_user(username, password_hash)?;
+        match self.create_defaults(id) {
+            Ok(()) => Ok(id),
+            Err(error) => Err(CreateUserError::Database(error)),
+        }
+    }
+
+    pub fn get_collections(&self, user_id: i64) -> rusqlite::Result<Vec<SheetCollection>> {
         let mut statement = self.connection.prepare(
             "SELECT id, name
             FROM collections
+            WHERE user_id = ?1
             ORDER BY id"
         )?;
-        let collections = statement.query_map([], |row| {
+        let collections = statement.query_map([user_id], |row| {
             Ok(SheetCollection::new(
                     row.get(0)?,
                     &row.get::<_,String>(1)?,
@@ -78,18 +124,18 @@ impl Database {
 
         collections.collect()
     }
-    pub fn create_collection(&self, name: &str) -> rusqlite::Result<i64> {
-        self.connection.execute("INSERT INTO collections (name) VALUES (?1)", [name])?;
+    pub fn create_collection(&self, user_id: i64, name: &str) -> rusqlite::Result<i64> {
+        self.connection.execute("INSERT INTO collections (user_id, name) VALUES (?1, ?2)", (user_id, name))?;
         Ok(self.connection.last_insert_rowid())
     }
-    pub fn get_collection(&self, name: &str) -> rusqlite::Result<i64> {
-        self.connection.query_row("SELECT id FROM collections WHERE name = ?1", [name], |row| row.get(0))
+    pub fn get_collection(&self, user_id: i64, name: &str) -> rusqlite::Result<i64> {
+        self.connection.query_row("SELECT id FROM collections WHERE user_id = ?1 AND name = ?2", (user_id, name), |row| row.get(0))
     }
-    pub fn get_or_create_collection(&self, name: &str) -> rusqlite::Result<i64> {
-        match self.get_collection(name) {
+    pub fn get_or_create_collection(&self, user_id: i64, name: &str) -> rusqlite::Result<i64> {
+        match self.get_collection(user_id, name) {
             Ok(id) => Ok(id),
             Err(rusqlite::Error::QueryReturnedNoRows) => {
-                self.create_collection(name)
+                self.create_collection(user_id, name)
             }
             Err(error) => Err(error),
         }
