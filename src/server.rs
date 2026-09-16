@@ -150,10 +150,12 @@ impl Server {
             Self::log_error(&format!("Failed to create session: {}", error));
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
+        let bootstrap = database.bootstrap(user_id)?;
         Ok(Json(LoginResponse {
             user_id,
             username: input.username,
-            session_token
+            session_token,
+            bootstrap
         }))
     }
     async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<StatusCode, StatusCode> {
