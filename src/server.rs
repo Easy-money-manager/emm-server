@@ -150,10 +150,12 @@ impl Server {
             Self::log_error(&format!("Failed to create session: {}", error));
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
+        let bootstrap = Self::build_bootstrap(&database, user_id)?;
         Ok(Json(LoginResponse {
             user_id,
             username: input.username,
-            session_token
+            session_token,
+            bootstrap
         }))
     }
     async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<StatusCode, StatusCode> {
@@ -252,16 +254,7 @@ impl Server {
         }
     }
 
-    async fn get_bootstrap(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<BootstrapResponse>, StatusCode> {
-        let database = match state.database.lock() {
-            Ok(database) => database,
-            Err(error)   => {
-                Self::log_error(&format!("Failed to lock database: {}", error));
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        };
-        let user_id: i64 = Self::authenticate(&headers, &database)?;
-
+    fn build_bootstrap(database: &Database, user_id: i64) -> Result<BootstrapResponse, StatusCode> {
         let mut collections = match database.get_collections(user_id) {
             Ok(collections) => collections,
             Err(error)      => {
@@ -289,8 +282,19 @@ impl Server {
                 };
             }
         }
-
-        Ok(Json(BootstrapResponse { collections } ))
+        Ok(BootstrapResponse { collections } )
+    }
+    async fn get_bootstrap(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<BootstrapResponse>, StatusCode> {
+        let database = match state.database.lock() {
+            Ok(database) => database,
+            Err(error)   => {
+                Self::log_error(&format!("Failed to lock database: {}", error));
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
+        let user_id: i64 = Self::authenticate(&headers, &database)?;
+        let bootstrap = Self::build_bootstrap(&database, user_id)?;
+        Ok(Json(bootstrap))
     }
 
     fn records_router() -> Router<AppState> {
