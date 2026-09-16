@@ -6,7 +6,10 @@ use crate::server::Server;
 
 #[tokio::main]
 async fn main() {
+    #[cfg(not(debug_assertions))]
     let database = Database::new("/var/lib/emm/easy_money_manager.db").expect("Failed to initialize database");
+    #[cfg(debug_assertions)]
+    let database = Database::new("easy_money_manager.db").expect("Failed to initialize database");
     database.initialize().expect("Failed to initialize database");
     let server = Server::new(database);
     if let Err(error) = server.run().await {
