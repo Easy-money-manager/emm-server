@@ -1,9 +1,10 @@
-use rusqlite::Connection;
-use chrono::NaiveDate;
+use rusqlite::{ Connection, OptionalExtension };
+use chrono::{ NaiveDate, Utc };
 use emm_shared::record::Record;
 use emm_shared::sheet::Sheet;
 use emm_shared::sheetcollection::SheetCollection;
 
+#[allow(unused)]
 pub enum CreateUserError {
     UsernameTaken,
     Database(rusqlite::Error),
@@ -28,52 +29,64 @@ impl Database {
     pub fn initialize(&self) -> rusqlite::Result<()> {
         self.connection.execute_batch(
             "
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEAGER PRIMARY KEY,
-                username TEXT NOT NULL,
-                password_hash NOT NULL,
+        PRAGMA foreign_keys = ON;
 
-                UNIQUE(id, username)
-            );
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS collections (
-                id INTEGER PRIMARY KEY,
-                user_id INTEAGER NOT NULL,
-                name TEXT NOT NULL,
+        CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            expires_at TEXT NOT NULL,
 
-                UNIQUE(id, name),
+            FOREIGN KEY (user_id)
+                REFERENCES users(id)
+                ON DELETE CASCADE
+        );
 
-                FOREIGN KEY (user_id)
-                    REFERENCES users(id)
-            );
+        CREATE TABLE IF NOT EXISTS collections (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
 
-            CREATE TABLE IF NOT EXISTS sheets (
-                id INTEGER PRIMARY KEY,
-                collection_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                fraction INTEGER NOT NULL,
+            UNIQUE(user_id, name),
 
-                UNIQUE(collection_id, name),
+            FOREIGN KEY (user_id)
+                REFERENCES users(id)
+                ON DELETE CASCADE
+        );
 
-                FOREIGN KEY (collection_id)
-                    REFERENCES collections(id)
-            );
+        CREATE TABLE IF NOT EXISTS sheets (
+            id INTEGER PRIMARY KEY,
+            collection_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            fraction INTEGER NOT NULL,
 
-            CREATE TABLE IF NOT EXISTS records (
-                id INTEGER PRIMARY KEY,
-                sheet_id INTEGER NOT NULL,
-                description TEXT NOT NULL,
-                date TEXT NOT NULL,
-                value INTEGER NOT NULL,
+            UNIQUE(collection_id, name),
 
-                UNIQUE(id),
+            FOREIGN KEY (collection_id)
+                REFERENCES collections(id)
+                ON DELETE CASCADE
+        );
 
-                FOREIGN KEY (sheet_id)
-                    REFERENCES sheets(id)
-            );
-            ",
-            )?;
-            Ok(())
+        CREATE TABLE IF NOT EXISTS records (
+            id INTEGER PRIMARY KEY,
+            sheet_id INTEGER NOT NULL,
+            description TEXT NOT NULL,
+            date TEXT NOT NULL,
+            value INTEGER NOT NULL,
+
+            FOREIGN KEY (sheet_id)
+                REFERENCES sheets(id)
+                ON DELETE CASCADE
+        );
+        ",
+        )?;
+
+        Ok(())
     }
 
     pub fn create_defaults(&self, user_id: i64) -> rusqlite::Result<()> {
@@ -102,10 +115,30 @@ impl Database {
     }
     pub fn create_user_with_defaults(&self, username: &str, password_hash: &str) -> Result<i64, CreateUserError> {
         let id = self.create_user(username, password_hash)?;
-        match self.create_defaults(id) {
-            Ok(()) => Ok(id),
-            Err(error) => Err(CreateUserError::Database(error)),
+        if let Err(error) = self.create_defaults(id) {
+            println!("Failed to create defaults for {}: {}", id, error);
         }
+        Ok(id)
+    }
+    pub fn get_session_user(&self, token_hash: &str) -> rusqlite::Result<Option<i64>> {
+        let now: String = Utc::now().to_rfc3339();
+        self.connection.query_row("SELECT user_id FROM sessions WHERE token_hash = ?1 AND expires_at > ?2", (token_hash, now), |row| row.get(0)).optional()
+    }
+    pub fn create_session(&self, user_id: i64, token_hash: &str, expires_at: &str) -> rusqlite::Result<()> {
+        self.connection.execute("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?1, ?2, ?3)", (token_hash, user_id, expires_at))?;
+        Ok(())
+    }
+    pub fn remove_session(&self, token_hash: &str) -> rusqlite::Result<()> {
+        self.connection.execute("DELETE FROM sessions WHERE token_hash = ?1", [token_hash])?;
+        Ok(())
+    }
+
+    pub fn get_user_for_login(&self, username: &str) -> rusqlite::Result<Option<(i64, String)>> {
+        self.connection.query_row("SELECT id, password_hash FROM users WHERE username = ?1", [username], |row| {
+            let id: i64 = row.get(0)?;
+            let password_hash: String = row.get(1)?;
+            Ok((id, password_hash))
+        }).optional()
     }
 
     pub fn get_collections(&self, user_id: i64) -> rusqlite::Result<Vec<SheetCollection>> {
@@ -175,14 +208,19 @@ impl Database {
         }
     }
 
-    pub fn get_records(&self, sheet_id: i64) -> rusqlite::Result<Vec<Record>> {
+    pub fn get_records(&self, user_id: i64, sheet_id: i64) -> rusqlite::Result<Vec<Record>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, description, date, value
+            "SELECT records.id, records.description, records.date, records.value
             FROM records
-            WHERE sheet_id = ?1
-            ORDER BY id"
+            INNER JOIN sheets
+                ON records.sheet_id = sheets.id
+            INNER JOIN collections
+                ON sheets.collection_id = collections.id
+            WHERE records.sheet_id = ?1
+            AND collections.user_id = ?2
+            ORDER BY records.id"
             )?;
-        let records = statement.query_map([sheet_id], |row| {
+        let records = statement.query_map((sheet_id, user_id), |row| {
                 let date_string: String = row.get(2)?;
 
                 let date = NaiveDate::parse_from_str(&date_string, "%Y-%m-%d").expect("Failed to parse date from database's string");
@@ -203,32 +241,73 @@ impl Database {
 
         Ok(result)
     }
-    pub fn create_record(&self, sheet_id: i64, description: &str, date: NaiveDate, value: i64) -> rusqlite::Result<i64> {
-        self.connection.execute("INSERT INTO records (sheet_id, description, date, value) VALUES (?1, ?2, ?3, ?4)", (sheet_id, description, date.to_string(), value))?;
+    pub fn create_record(&self, user_id: i64, sheet_id: i64, description: &str, date: NaiveDate, value: i64) -> rusqlite::Result<i64> {
+        let affected_rows: usize = self.connection.execute("
+            INSERT INTO records
+            (sheet_id, description, date, value)
+            SELECT sheets.id, ?2, ?3, ?4 
+            FROM sheets
+            INNER JOIN collections
+                ON sheets.collection_id = collections.id
+            WHERE collections.user_id = ?5
+            AND sheets.id = ?1
+            ", (sheet_id, description, date.to_string(), value, user_id))?;
+        if affected_rows == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
         Ok(self.connection.last_insert_rowid())
     }
     #[allow(dead_code)]
     pub fn get_record(&self, sheet_id: i64, description: &str, date: NaiveDate, value: i64) -> rusqlite::Result<i64> {
-        self.connection.query_row("SELECT id from records WHERE sheet_id = ?1 and description = ?2 AND date = ?3 AND value = ?4", (sheet_id, description, date.to_string(), value), |row| row.get(0))
+        self.connection.query_row("
+            SELECT id
+            FROM records
+            WHERE records.sheet_id = ?1
+            AND description = ?2
+            AND date = ?3
+            AND value = ?4
+            ", (sheet_id, description, date.to_string(), value), |row| row.get(0))
     }
-    pub fn update_record(&self, id: i64, description: &str, date: NaiveDate, value: i64) -> rusqlite::Result<()> {
-        self.connection.execute(
-            "UPDATE records
+    pub fn update_record(&self, user_id: i64, id: i64, description: &str, date: NaiveDate, value: i64) -> rusqlite::Result<()> {
+        let affected_rows: usize = self.connection.execute("
+            UPDATE records
             SET description = ?1,
             date = ?2,
             value = ?3
-            WHERE id = ?4",
-            (description, date.to_string(), value, id)
+            WHERE id = ?4
+            AND sheet_id IN (
+                SELECT sheets.id
+                FROM sheets
+                INNER JOIN collections
+                    ON sheets.collection_id = collections.id
+                WHERE collections.user_id = ?5
+            )",
+            (description, date.to_string(), value, id, user_id)
             )?;
+
+        if affected_rows == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
 
         Ok(())
     }
-    pub fn remove_record(&self, id: i64) -> rusqlite::Result<()> {
-        self.connection.execute(
+    pub fn remove_record(&self, user_id: i64, id: i64) -> rusqlite::Result<()> {
+        let affected_rows: usize = self.connection.execute(
             "DELETE FROM records
-            WHERE id = ?1",
-            [id]
+            WHERE id = ?1
+            AND sheet_id IN (
+                SELECT sheets.id
+                FROM sheets
+                INNER JOIN collections
+                    ON sheets.collection_id = collections.id
+                WHERE collections.user_id = ?2
+            )",
+            [id, user_id]
         )?;
+
+        if affected_rows == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
 
         Ok(())
     }
