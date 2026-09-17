@@ -9,6 +9,7 @@ use sha2::{ Digest, Sha256 };
 use argon2::{ Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString };
 use rand_core::{ OsRng, RngCore };
 use chrono::{ Utc, Duration };
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Serialize)]
 struct TestResponse {
@@ -54,7 +55,8 @@ impl Server {
 
     fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
         let salt: SaltString = SaltString::generate(&mut OsRng);
-        let password_hash: String = Argon2::default().hash_password(password.as_bytes(), &salt)?.to_string();
+        let password_normalized: String = password.to_string().nfc().collect::<String>();
+        let password_hash: String = Argon2::default().hash_password(password_normalized.as_bytes(), &salt)?.to_string();
         Ok(password_hash)
     }
     fn verify_password(password: &str, password_hash: &str) -> bool {
