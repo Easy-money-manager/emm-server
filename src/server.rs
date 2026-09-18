@@ -124,7 +124,7 @@ impl Server {
         if let Err(error) = database.create_defaults(user_id) {
             Self::log_error(&format!("Failed to create defaults for user {}: {}", user_id, error));
         }
-        Self::log(!format!("Created user:\t{}\t{}", user_id, input.username));
+        Self::log(&format!("Created user:\t{}\t{}", user_id, input.username));
         Ok(StatusCode::CREATED)
     }
     async fn login(State(state): State<AppState>, Json(input): Json<LoginRequest>) -> Result<Json<LoginResponse>, StatusCode> {
