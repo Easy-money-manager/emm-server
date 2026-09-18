@@ -1,6 +1,6 @@
 use emm_shared::request::{ RegisterRequest, LoginRequest, CreateRecordRequest, UpdateRecordRequest };
 use emm_shared::response::{ LoginResponse, GetRecordsResponse, CreateRecordResponse,  BootstrapResponse };
-use axum::{ Router, routing::{ get, put, post }, Json, extract::{ Path, State }, http::{ StatusCode, HeaderMap, header::AUTHORIZATION } };
+use axum::{ Router, routing::{ get, put, post, delete }, Json, extract::{ Path, State }, http::{ StatusCode, HeaderMap, header::AUTHORIZATION } };
 use serde::Serialize;
 use std::sync::{ Arc, Mutex };
 use crate::database::{ Database, CreateUserError };
@@ -49,9 +49,9 @@ impl Server {
     fn log_error(message: &str) {
         eprintln!("[SERVER ERROR]: {}", message);
     }
-//    fn log(message: &str) {
-//        eprintln!("[SERVER LOG]: {}", message);
-//    }
+    fn log(message: &str) {
+        eprintln!("[SERVER LOG]: {}", message);
+    }
 
     fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
         let salt: SaltString = SaltString::generate(&mut OsRng);
@@ -124,6 +124,7 @@ impl Server {
         if let Err(error) = database.create_defaults(user_id) {
             Self::log_error(&format!("Failed to create defaults for user {}: {}", user_id, error));
         }
+        Self::log(!format!("Created user:\t{}\t{}", user_id, input.username));
         Ok(StatusCode::CREATED)
     }
     async fn login(State(state): State<AppState>, Json(input): Json<LoginRequest>) -> Result<Json<LoginResponse>, StatusCode> {
@@ -175,6 +176,26 @@ impl Server {
             Ok(())     => Ok(StatusCode::NO_CONTENT),
             Err(error) => {
                 Self::log_error(&format!("Failed to remove session: {}", error));
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+    }
+    async fn remove_account(State(state): State<AppState>, headers: HeaderMap) -> Result<StatusCode, StatusCode> {
+        let database = match state.database.lock() {
+            Ok(database) => database,
+            Err(error)   => {
+                Self::log_error(&format!("Failed to lock database: {}", error));
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
+        let user_id: i64 = Self::authenticate(&headers, &database)?;
+        match database.remove_user(user_id) {
+            Ok(())     => {
+                Self::log(&format!("Successfully removed user:\t{}", user_id));
+                Ok(StatusCode::NO_CONTENT)
+            }
+            Err(error) => {
+                Self::log_error(&format!("Failed to remove account: {}", error));
                 Err(StatusCode::INTERNAL_SERVER_ERROR)
             }
         }
@@ -319,6 +340,7 @@ impl Server {
             .route("/auth/register", post(Self::register))
             .route("/auth/login", post(Self::login))
             .route("/auth/logout", post(Self::logout))
+            .route("/adios", delete(Self::remove_account))
     }
     fn router(&self) -> Router {
         let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);

@@ -113,6 +113,13 @@ impl Database {
 
         Ok(self.connection.last_insert_rowid())
     }
+    pub fn remove_user(&self, user_id: i64) -> rusqlite::Result<()> {
+        let affected_rows: usize = self.connection.execute("DELETE FROM users WHERE id = ?1", [user_id])?;
+        if affected_rows == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
+    }
     pub fn create_user_with_defaults(&self, username: &str, password_hash: &str) -> Result<i64, CreateUserError> {
         let id = self.create_user(username, password_hash)?;
         if let Err(error) = self.create_defaults(id) {
@@ -207,6 +214,35 @@ impl Database {
             Err(error) => Err(error),
         }
     }
+/*    pub fn remove_sheet(&self, sheet_id: i64, user_id: i64) -> rusqlite::Result<()> {
+        self.connection.execute("
+            DELETE FROM records
+            WHERE sheet_id = ?1
+            AND sheet_id IN (
+                SELECT sheets.id
+                FROM sheets
+                INNER JOIN collections
+                    ON collections.id = sheets.collection_id
+                INNER JOIN users
+                    ON users.id = collections.user_id
+                WHERE users.id = ?2
+                )",
+            [sheet_id, user_id]
+        )?;
+        self.connection.execute("
+            DELETE FROM sheets
+            WHERE id = ?1
+            AND collection_id IN (
+                SELECT collecions.id
+                FROM collections
+                INNER JOIN users
+                    ON users.id = collections.user_id
+                WHERE users.id = ?2
+            )",
+            [sheet_id, user_id]
+        )?;
+        Ok(())
+    }*/
 
     pub fn get_records(&self, user_id: i64, sheet_id: i64) -> rusqlite::Result<Vec<Record>> {
         let mut statement = self.connection.prepare(
@@ -219,19 +255,19 @@ impl Database {
             WHERE records.sheet_id = ?1
             AND collections.user_id = ?2
             ORDER BY records.id"
-            )?;
+        )?;
         let records = statement.query_map((sheet_id, user_id), |row| {
-                let date_string: String = row.get(2)?;
+            let date_string: String = row.get(2)?;
 
-                let date = NaiveDate::parse_from_str(&date_string, "%Y-%m-%d").expect("Failed to parse date from database's string");
+            let date = NaiveDate::parse_from_str(&date_string, "%Y-%m-%d").expect("Failed to parse date from database's string");
 
-                Ok(Record {
-                    id: row.get(0)?,
-                    description: row.get(1)?,
-                    date: date,
-                    value: row.get(3)?,
-                })
-            },
+            Ok(Record {
+                id: row.get(0)?,
+                description: row.get(1)?,
+                date: date,
+                value: row.get(3)?,
+            })
+        },
         )?;
 
         let mut result: Vec<Record> = Vec::new();
@@ -283,7 +319,7 @@ impl Database {
                 WHERE collections.user_id = ?5
             )",
             (description, date.to_string(), value, id, user_id)
-            )?;
+        )?;
 
         if affected_rows == 0 {
             return Err(rusqlite::Error::QueryReturnedNoRows);
