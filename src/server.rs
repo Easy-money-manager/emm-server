@@ -1,5 +1,5 @@
-use emm_shared::request::{ RegisterRequest, LoginRequest, CreateRecordRequest, UpdateRecordRequest };
-use emm_shared::response::{ LoginResponse, GetRecordsResponse, CreateRecordResponse,  BootstrapResponse };
+use emm_shared::request::{ RegisterRequest, LoginRequest, CreateRecordRequest, UpdateRecordRequest, ImportSheetRequest };
+use emm_shared::response::{ LoginResponse, GetRecordsResponse, CreateRecordResponse,  BootstrapResponse, ImportSheetResponse };
 use axum::{ Router, routing::{ get, put, post, delete }, Json, extract::{ Path, State }, http::{ StatusCode, HeaderMap, header::AUTHORIZATION } };
 use serde::Serialize;
 use std::sync::{ Arc, Mutex };
@@ -10,6 +10,7 @@ use argon2::{ Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_h
 use rand_core::{ OsRng, RngCore };
 use chrono::{ Utc, Duration };
 use unicode_normalization::UnicodeNormalization;
+use emm_shared::record::Record;
 
 #[derive(Serialize)]
 struct TestResponse {
@@ -276,6 +277,25 @@ impl Server {
             }
         }
     }
+    async fn import_sheet(Path(sheet_id): Path<i64>, State(state): State<AppState>, headers: HeaderMap, Json(input) : Json<ImportSheetRequest>) -> Result<Json<ImportSheetResponse>, StatusCode> {
+        let mut database = match state.database.lock() {
+            Ok(database) => database,
+            Err(error)   => {
+                Self::log_error(&format!("Failed to lock database: {}", error));
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
+        let user_id: i64 = Self::authenticate(&headers, &database)?;
+
+
+        let records: Vec<Record> = database.import_records_to_sheet(user_id, sheet_id, input.records).map_err(|error| {
+            Self::log_error(&format!("Failed to import records: {}", error  ));
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        Self::log(&format!("Successfully imported sheet with {} records for user: {}", records.len(), user_id));
+        Ok(Json(ImportSheetResponse { records } ))
+    }
 
     fn build_bootstrap(database: &Database, user_id: i64) -> Result<BootstrapResponse, StatusCode> {
         let mut collections = match database.get_collections(user_id) {
@@ -331,7 +351,9 @@ impl Server {
         .delete(Self::remove_record)
         )
     }
-
+    fn import_router() -> Router<AppState> {
+        Router::new().route("/import/sheet/{sheet_id}", post(Self::import_sheet))
+    }
     fn bootstrap_router() -> Router<AppState> {
         Router::new().route("/bootstrap", get(Self::get_bootstrap))
     }
@@ -350,6 +372,7 @@ impl Server {
             .merge(Self::records_router())
             .merge(Self::bootstrap_router())
             .merge(Self::auth_router())
+            .merge(Self::import_router())
             .with_state(self.state.clone())
             .layer(cors)
     }
