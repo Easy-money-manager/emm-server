@@ -1,6 +1,6 @@
 use rusqlite::{ Connection, OptionalExtension };
 use chrono::{ NaiveDate, Utc };
-use emm_shared::record::Record;
+use emm_shared::record::{ Record, ParsedImportRecord };
 use emm_shared::sheet::Sheet;
 use emm_shared::sheetcollection::SheetCollection;
 
@@ -214,36 +214,36 @@ impl Database {
             Err(error) => Err(error),
         }
     }
-/*    pub fn remove_sheet(&self, sheet_id: i64, user_id: i64) -> rusqlite::Result<()> {
-        self.connection.execute("
-            DELETE FROM records
-            WHERE sheet_id = ?1
-            AND sheet_id IN (
-                SELECT sheets.id
-                FROM sheets
-                INNER JOIN collections
-                    ON collections.id = sheets.collection_id
-                INNER JOIN users
-                    ON users.id = collections.user_id
-                WHERE users.id = ?2
-                )",
-            [sheet_id, user_id]
-        )?;
-        self.connection.execute("
-            DELETE FROM sheets
-            WHERE id = ?1
-            AND collection_id IN (
-                SELECT collecions.id
-                FROM collections
-                INNER JOIN users
-                    ON users.id = collections.user_id
-                WHERE users.id = ?2
-            )",
-            [sheet_id, user_id]
-        )?;
-        Ok(())
-    }*/
+    pub fn import_records_to_sheet(&mut self, user_id: i64, sheet_id: i64, input: Vec<ParsedImportRecord>) -> rusqlite::Result<Vec<Record>> {
+        let tx = self.connection.transaction()?;
 
+        let owns_sheet: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sheets JOIN collections ON collections.id = sheets.collection_id WHERE sheets.id = ?1 AND collections.user_id = ?2)", (sheet_id, user_id), |row| row.get(0))?;
+        if !owns_sheet {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+
+        let mut imported = Vec::with_capacity(input.len());
+
+        for record in input {
+            tx.execute("
+                INSERT INTO records
+                (sheet_id, description, date, value)
+                VALUES
+                (?1, ?2, ?3, ?4)
+            ",
+            (sheet_id, &record.description, record.date.to_string(), record.value)
+            )?;
+            let id = tx.last_insert_rowid();
+            imported.push(Record {
+                id: id,
+                description: record.description,
+                date: record.date,
+                value: record.value,
+            });
+        }
+        tx.commit()?;
+        Ok(imported)
+    }
     pub fn get_records(&self, user_id: i64, sheet_id: i64) -> rusqlite::Result<Vec<Record>> {
         let mut statement = self.connection.prepare(
             "SELECT records.id, records.description, records.date, records.value
